@@ -1,4 +1,4 @@
-module github.com/yxatabl/go-linter/m
+module github.com/yxatabl/go-linter
 
 go 1.25.0
 
