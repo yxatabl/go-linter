@@ -15,30 +15,36 @@ import (
 
 var Analyzer = &analysis.Analyzer{
 	Name:     "loglint",
-	Doc:      "Checks for log formatting issues",
+	Doc:      "Checks for log formatting and content issues",
 	Requires: []*analysis.Analyzer{inspect.Analyzer},
 	Run:      run,
 }
 
 var logMethods = map[string]bool{
-	"Info":  true,
-	"Error": true,
-	"Warn":  true,
-	"Debug": true,
-	"Trace": true,
-	"Fatal": true,
-	"Panic": true,
+	"Info":    true,
+	"Error":   true,
+	"Warn":    true,
+	"Debug":   true,
+	"Trace":   true,
+	"Fatal":   true,
+	"Panic":   true,
+	"Print":   true,
+	"Println": true,
+	"Printf":  true,
 }
 
 var defaultSensitivePatterns = []*regexp.Regexp{
-	regexp.MustCompile(`(?i)password`),
-	regexp.MustCompile(`(?i)passwd`),
-	regexp.MustCompile(`(?i)token`),
+	regexp.MustCompile(`(?i)\bpassword\b`),
+	regexp.MustCompile(`(?i)\bpasswd\b`),
+	regexp.MustCompile(`(?i)\btoken\b`),
 	regexp.MustCompile(`(?i)api[_-]?key`),
-	regexp.MustCompile(`(?i)secret`),
-	regexp.MustCompile(`(?i)credential`),
-	regexp.MustCompile(`(?i)auth`),
+	regexp.MustCompile(`(?i)\bsecret\b`),
+	regexp.MustCompile(`(?i)\bcredential\b`),
 }
+
+var (
+	nonASCIIPattern = regexp.MustCompile(`[^\x00-\x7F]`)
+)
 
 func run(pass *analysis.Pass) (interface{}, error) {
 	inspector, ok := pass.ResultOf[inspect.Analyzer].(*inspector.Inspector)
@@ -64,137 +70,12 @@ func checkLogCall(pass *analysis.Pass, call *ast.CallExpr) {
 		return
 	}
 
-	msg := extractMessage(call, logInfo)
+	msg := extractMessage(call)
 	if msg == "" {
 		return
 	}
 
-	applyRules(pass, call, msg, logInfo)
-}
-
-func extractMessage(call *ast.CallExpr, info *LogCallInfo) string {
-	if len(call.Args) == 0 {
-		return ""
-	}
-
-	firstArg := call.Args[0]
-	return extractStringFromExpr(firstArg)
-}
-
-func extractStringFromExpr(expr ast.Expr) string {
-	switch e := expr.(type) {
-	case *ast.BasicLit:
-		if e.Kind == token.STRING {
-			return unquoteString(e.Value)
-		}
-	case *ast.BinaryExpr:
-		if e.Op == token.ADD {
-			left := extractStringFromExpr(e.X)
-			right := extractStringFromExpr(e.Y)
-			if left != "" && right != "" {
-				return left + right
-			}
-		}
-	case *ast.Ident:
-		// переменная-сообщение - пока игнорируем
-		return ""
-	}
-	return ""
-}
-
-func unquoteString(s string) string {
-	if strings.HasPrefix(s, "`") {
-		return s[1 : len(s)-1]
-	}
-
-	unquoted, err := strconv.Unquote(s)
-	if err != nil {
-		return ""
-	}
-	return unquoted
-}
-
-func applyRules(pass *analysis.Pass, call *ast.CallExpr, msg string, info *LogCallInfo) {
-	if !startswithLowercase(msg) {
-		pass.Report(analysis.Diagnostic{
-			Pos:      call.Pos(),
-			Message:  "log message should start with a lowercase letter",
-			Category: "loglint",
-		})
-	}
-
-	if !isEnglishOnly(msg) {
-		pass.Report(analysis.Diagnostic{
-			Pos:      call.Pos(),
-			Message:  "log message must be in English only",
-			Category: "loglint",
-		})
-	}
-
-	if hasSpecialCahrsOrEmojis(msg) {
-		pass.Report(analysis.Diagnostic{
-			Pos:      call.Pos(),
-			Message:  "log message should not contain special characters or emojis",
-			Category: "loglint",
-		})
-	}
-
-	if containsSensitiveData(msg) {
-		pass.Report(analysis.Diagnostic{
-			Pos:      call.Pos(),
-			Message:  "log message should not contain sensitive data",
-			Category: "loglint",
-		})
-	}
-}
-
-func startswithLowercase(s string) bool {
-	if len(s) == 0 {
-		return true
-	}
-
-	firstRune := []rune(s)[0]
-	return unicode.IsLower(firstRune)
-}
-
-func isEnglishOnly(s string) bool {
-	allowedPattern := regexp.MustCompile(`^[a-zA-Z0-9\s\.,!?\-':;\(\)\[\]{}<>/\\_+=*&^%$#@~` + "`" + `" ]+$`)
-	nonEnglishPattern := regexp.MustCompile(`[^\x00-\x7F]`)
-
-	if len(s) == 0 {
-		return true
-	}
-
-	if nonEnglishPattern.MatchString(s) {
-		return false
-	}
-
-	return allowedPattern.MatchString(s)
-}
-
-func hasSpecialCahrsOrEmojis(s string) bool {
-	emojisPattern := regexp.MustCompile(`[\x{1F600}-\x{1F64F}\x{1F300}-\x{1F5FF}\x{1F680}-\x{1F6FF}\x{1F1E0}-\x{1F1FF}\x{2600}-\x{26FF}\x{2700}-\x{27BF}]`)
-	specialCahrs := regexp.MustCompile(`[!?…]{2,}$`)
-
-	if emojisPattern.MatchString(s) {
-		return true
-	}
-
-	if specialCahrs.MatchString(s) {
-		return true
-	}
-
-	return false
-}
-
-func containsSensitiveData(s string) bool {
-	for _, pattern := range defaultSensitivePatterns {
-		if pattern.MatchString(s) {
-			return true
-		}
-	}
-
-	return false
+	applyRules(pass, call, msg)
 }
 
 func identifyLogCall(call *ast.CallExpr) *LogCallInfo {
@@ -207,8 +88,6 @@ func identifyLogCall(call *ast.CallExpr) *LogCallInfo {
 	switch x := sel.X.(type) {
 	case *ast.Ident:
 		receiverName = x.Name
-	case *ast.SelectorExpr:
-		return nil // для случая типа zap.L().Info(...) — пока игнорируем
 	default:
 		return nil
 	}
@@ -228,32 +107,131 @@ func identifyLogCall(call *ast.CallExpr) *LogCallInfo {
 	}
 }
 
-type LogCallInfo struct {
-	Receiver string
-	Method   string
+func extractMessage(call *ast.CallExpr) string {
+	if len(call.Args) == 0 {
+		return ""
+	}
+
+	firstArg := call.Args[0]
+	return extractStringFromExpr(firstArg)
 }
 
-func checkMessage(pass *analysis.Pass, arg ast.Expr, pos token.Pos) {
-	lit, ok := arg.(*ast.BasicLit)
-	if !ok || lit.Kind != token.STRING {
-		return
+func extractStringFromExpr(expr ast.Expr) string {
+	switch e := expr.(type) {
+	case *ast.BasicLit:
+		if e.Kind == token.STRING {
+			return unquoteString(e.Value)
+		}
+	case *ast.BinaryExpr:
+		if e.Op == token.ADD {
+			left := extractStringFromExpr(e.X)
+			right := extractStringFromExpr(e.Y)
+			return left + right
+		}
+	}
+	return ""
+}
+
+func unquoteString(s string) string {
+	if strings.HasPrefix(s, "`") {
+		return s[1 : len(s)-1]
 	}
 
-	msg, err := strconv.Unquote(lit.Value)
+	unquoted, err := strconv.Unquote(s)
 	if err != nil {
-		return
+		return ""
 	}
+	return unquoted
+}
 
-	if len(msg) == 0 {
-		return
-	}
+func applyRules(pass *analysis.Pass, call *ast.CallExpr, msg string) {
+	hasEmojiOrSpecial := hasSpecialCharsOrEmojis(msg)
 
-	firstRune := []rune(msg)[0]
-	if !unicode.IsLower(firstRune) {
+	// First rule
+	if !startsWithLowercase(msg) {
 		pass.Report(analysis.Diagnostic{
-			Pos:      pos,
+			Pos:      call.Pos(),
 			Message:  "log message should start with a lowercase letter",
 			Category: "loglint",
 		})
 	}
+
+	// Second rule
+	if !hasEmojiOrSpecial && !isEnglishOnly(msg) {
+		pass.Report(analysis.Diagnostic{
+			Pos:      call.Pos(),
+			Message:  "log message must be in English only",
+			Category: "loglint",
+		})
+	}
+
+	// Third rule
+	if hasEmojiOrSpecial {
+		pass.Report(analysis.Diagnostic{
+			Pos:      call.Pos(),
+			Message:  "log message should not contain special characters or emojis",
+			Category: "loglint",
+		})
+	}
+
+	// Fourth rule
+	if containsSensitiveData(msg) {
+		pass.Report(analysis.Diagnostic{
+			Pos:      call.Pos(),
+			Message:  "log message should not contain sensitive data",
+			Category: "loglint",
+		})
+	}
+}
+
+func startsWithLowercase(s string) bool {
+	if len(s) == 0 {
+		return true
+	}
+
+	firstRune := []rune(s)[0]
+	if !unicode.IsLetter(firstRune) {
+		return true
+	}
+
+	return unicode.IsLower(firstRune)
+}
+
+func isEnglishOnly(s string) bool {
+	if len(s) == 0 {
+		return true
+	}
+
+	return !nonASCIIPattern.MatchString(s)
+}
+
+func hasSpecialCharsOrEmojis(s string) bool {
+	for _, r := range s {
+		if r > 0xFFFF {
+			return true
+		}
+	}
+
+	if strings.Contains(s, "!!!") ||
+		strings.Contains(s, "???") ||
+		strings.Contains(s, "...") {
+		return true
+	}
+
+	return false
+}
+
+func containsSensitiveData(s string) bool {
+	sLower := strings.ToLower(s)
+	for _, pattern := range defaultSensitivePatterns {
+		if pattern.MatchString(sLower) {
+			return true
+		}
+	}
+	return false
+}
+
+type LogCallInfo struct {
+	Receiver string
+	Method   string
 }
