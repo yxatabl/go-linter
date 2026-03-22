@@ -2,11 +2,6 @@ package loglint
 
 import (
 	"go/ast"
-	"go/token"
-	"regexp"
-	"strconv"
-	"strings"
-	"unicode"
 
 	"golang.org/x/tools/go/analysis"
 	"golang.org/x/tools/go/analysis/passes/inspect"
@@ -19,32 +14,6 @@ var Analyzer = &analysis.Analyzer{
 	Requires: []*analysis.Analyzer{inspect.Analyzer},
 	Run:      run,
 }
-
-var logMethods = map[string]bool{
-	"Info":    true,
-	"Error":   true,
-	"Warn":    true,
-	"Debug":   true,
-	"Trace":   true,
-	"Fatal":   true,
-	"Panic":   true,
-	"Print":   true,
-	"Println": true,
-	"Printf":  true,
-}
-
-var defaultSensitivePatterns = []*regexp.Regexp{
-	regexp.MustCompile(`(?i)\bpassword\b`),
-	regexp.MustCompile(`(?i)\bpasswd\b`),
-	regexp.MustCompile(`(?i)\btoken\b`),
-	regexp.MustCompile(`(?i)api[_-]?key`),
-	regexp.MustCompile(`(?i)\bsecret\b`),
-	regexp.MustCompile(`(?i)\bcredential\b`),
-}
-
-var (
-	nonASCIIPattern = regexp.MustCompile(`[^\x00-\x7F]`)
-)
 
 func run(pass *analysis.Pass) (interface{}, error) {
 	inspector, ok := pass.ResultOf[inspect.Analyzer].(*inspector.Inspector)
@@ -107,43 +76,6 @@ func identifyLogCall(call *ast.CallExpr) *LogCallInfo {
 	}
 }
 
-func extractMessage(call *ast.CallExpr) string {
-	if len(call.Args) == 0 {
-		return ""
-	}
-
-	firstArg := call.Args[0]
-	return extractStringFromExpr(firstArg)
-}
-
-func extractStringFromExpr(expr ast.Expr) string {
-	switch e := expr.(type) {
-	case *ast.BasicLit:
-		if e.Kind == token.STRING {
-			return unquoteString(e.Value)
-		}
-	case *ast.BinaryExpr:
-		if e.Op == token.ADD {
-			left := extractStringFromExpr(e.X)
-			right := extractStringFromExpr(e.Y)
-			return left + right
-		}
-	}
-	return ""
-}
-
-func unquoteString(s string) string {
-	if strings.HasPrefix(s, "`") {
-		return s[1 : len(s)-1]
-	}
-
-	unquoted, err := strconv.Unquote(s)
-	if err != nil {
-		return ""
-	}
-	return unquoted
-}
-
 func applyRules(pass *analysis.Pass, call *ast.CallExpr, msg string) {
 	hasEmojiOrSpecial := hasSpecialCharsOrEmojis(msg)
 
@@ -182,56 +114,4 @@ func applyRules(pass *analysis.Pass, call *ast.CallExpr, msg string) {
 			Category: "loglint",
 		})
 	}
-}
-
-func startsWithLowercase(s string) bool {
-	if len(s) == 0 {
-		return true
-	}
-
-	firstRune := []rune(s)[0]
-	if !unicode.IsLetter(firstRune) {
-		return true
-	}
-
-	return unicode.IsLower(firstRune)
-}
-
-func isEnglishOnly(s string) bool {
-	if len(s) == 0 {
-		return true
-	}
-
-	return !nonASCIIPattern.MatchString(s)
-}
-
-func hasSpecialCharsOrEmojis(s string) bool {
-	for _, r := range s {
-		if r > 0xFFFF {
-			return true
-		}
-	}
-
-	if strings.Contains(s, "!!!") ||
-		strings.Contains(s, "???") ||
-		strings.Contains(s, "...") {
-		return true
-	}
-
-	return false
-}
-
-func containsSensitiveData(s string) bool {
-	sLower := strings.ToLower(s)
-	for _, pattern := range defaultSensitivePatterns {
-		if pattern.MatchString(sLower) {
-			return true
-		}
-	}
-	return false
-}
-
-type LogCallInfo struct {
-	Receiver string
-	Method   string
 }
