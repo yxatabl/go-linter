@@ -1,0 +1,10 @@
+module github.com/yxatabl/go-linter/m
+
+go 1.25.0
+
+require (
+	github.com/golangci/go-printf-func-name v0.1.1
+	golang.org/x/mod v0.34.0 // indirect
+	golang.org/x/sync v0.20.0 // indirect
+	golang.org/x/tools v0.43.0
+)
