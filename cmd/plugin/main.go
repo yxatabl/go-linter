@@ -1,6 +1,6 @@
 package main
 
-import "github.com/yxatabl/go-linter/m/pkg/loglint"
+import "github.com/yxatabl/go-linter/pkg/loglint"
 
 var AnalyzerPlugin = loglint.NewPlugin()
 
